@@ -195,14 +195,36 @@ a cause d'une variable restee dans le shell.
 
 ### Le calendrier
 
-Le calendrier est lance comme un **script separe** (`pipeline_calendar.py`),
-exactement comme dans la version d'origine, avec les arguments `--once` et
-`--data-dir`.
+Le calendrier utilise ses **propres sources publiques gratuites** (calendrier
+Forex Factory). Il n'a besoin d'aucun secret et n'appelle jamais OANDA.
 
-Il applique un **plancher anti-limite de debit** : si vous relancez la chaine
-trop vite, il ressert le dernier artefact connu. L'application l'indique alors
-clairement (`servi depuis le cache`). Au-dela de 48 h, la chaine **refuse** de
-produire le desk plutot que d'afficher des donnees perimees.
+Il est invoque **directement**, en appelant sa fonction `run_once()` — pas par
+sous-processus. C'est volontaire : sur Streamlit Community Cloud, un
+sous-processus peut rester bloque sans que personne ne le voie.
+
+#### Si la source limite le debit
+
+La source publique impose une limite (HTTP 429). Dans ce cas :
+
+- **la chaine s'arrete** et affiche « calendrier indisponible (limite de debit
+  atteinte) — relancez dans quelques minutes » ;
+- **aucun desk n'est produit** : il serait trompeur, car il porterait un
+  avertissement de risque calendaire incomplet.
+
+Ce n'est pas une panne : c'est une protection. La limite se leve generalement
+en quelques minutes. **Attendez et relancez.**
+
+#### Le seuil de peremption
+
+Un calendrier de plus de 48 h fait **echouer** la chaine : produire un desk sur
+des donnees de marche aussi anciennes n'aurait pas de sens. Entre 12 h et 48 h,
+le calendrier est utilise mais signale comme servi depuis le cache.
+
+### La premiere execution
+
+La toute premiere execution telecharge l'integralite du calendrier. Si la
+source est momentanement limitee, relancez simplement quelques minutes plus
+tard : rien n'est casse.
 
 ### Le week-end
 

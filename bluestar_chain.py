@@ -24,7 +24,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -56,7 +55,6 @@ SEUIL_FRAICHEUR_CALENDRIER_H = 12.0
 SEUIL_PEREMPTION_CALENDRIER_H = 48.0
 
 DELAI_SCANNER = 300.0
-DELAI_CALENDRIER = 180.0
 
 
 # ---------------------------------------------------------------------------
@@ -345,26 +343,64 @@ def _scanner_sr(ident, travail, journal):
 # Etape A bis - le calendrier (script d'origine, lance tel quel)
 # ---------------------------------------------------------------------------
 def _calendrier(travail, journal):
+    """Ingere le calendrier en appelant directement le module d'origine.
+
+    On n'utilise PAS de sous-processus : sur Streamlit Community Cloud, un
+    ``subprocess`` herite d'un environnement ou l'interpreteur n'est pas
+    forcement executable, et il bloque sans que personne ne le voie.
+
+    On appelle donc ``run_once()`` du programme d'origine, qui est la
+    fonction qui fait reellement le travail (le mode ``--once`` de la ligne
+    de commande ne fait que l'appeler). Le code du calendrier n'est pas
+    modifie : on se contente de l'invoquer autrement.
+    """
     dossier = travail / "calendrier"
     dossier.mkdir(parents=True, exist_ok=True)
-    script = DOSSIER_CALENDRIER / "pipeline_calendar.py"
-    proc = subprocess.run(
-        [sys.executable, str(script), "--once", "--data-dir", str(dossier)],
-        cwd=str(DOSSIER_CALENDRIER), capture_output=True, text=True,
-        timeout=DELAI_CALENDRIER,
-    )
-    sortie = (proc.stdout or "") + (proc.stderr or "")
-    cible = dossier / FICHIER_CALENDAR
 
+    mod = _charger_module("bs_calendrier", DOSSIER_CALENDRIER / "pipeline_calendar.py",
+                          DOSSIER_CALENDRIER)
+
+    # Le programme d'origine journalise sur sa propre sortie. On la capte
+    # pour la restituer dans l'interface au lieu de la perdre.
+    import io as _io
+    import logging as _log
+    tampon = _io.StringIO()
+    manche = _log.StreamHandler(tampon)
+    manche.setLevel(_log.INFO)
+    racine = _log.getLogger()
+    niveau_avant = racine.level
+    racine.addHandler(manche)
+    racine.setLevel(_log.INFO)
+    try:
+        charge = mod.run_once(Path(dossier))
+    finally:
+        racine.removeHandler(manche)
+        racine.setLevel(niveau_avant)
+    for ligne in tampon.getvalue().splitlines():
+        if ligne.strip():
+            journal(ligne.strip()[:150])
+
+
+
+    cible = dossier / FICHIER_CALENDAR
     if not cible.is_file():
-        if "fetch floor" in sortie.lower() or "cooldown" in sortie.lower():
+        # Rien de neuf publie : soit un plancher, soit un cooldown.
+        etat = ""
+        sante = dossier / "health.json"
+        if sante.is_file():
+            try:
+                h = json.loads(sante.read_bytes())
+                etat = str(h.get("status") or h.get("error") or "")
+            except Exception:
+                etat = ""
+        if charge is None or "COOLDOWN" in etat.upper() or "FLOOR" in etat.upper():
             raise RuntimeError(
-                "calendrier indisponible (limite de debit atteinte) - "
-                "relancez dans quelques minutes"
+                "calendrier indisponible (limite de debit atteinte"
+                + (" - " + etat if etat else "")
+                + ") - relancez dans quelques minutes"
             )
-        raise RuntimeError(
-            "le calendrier n'a produit aucun fichier (code " + str(proc.returncode) + ")"
-        )
+        raise RuntimeError("le calendrier n'a produit aucun fichier"
+                           + (" (" + etat + ")" if etat else ""))
 
     doc = json.loads(cible.read_bytes())
     age = _age_heures(doc)
