@@ -54,12 +54,46 @@ FICHIER_CALENDAR = "calendar.json"
 SEUIL_FRAICHEUR_CALENDRIER_H = 12.0
 SEUIL_PEREMPTION_CALENDRIER_H = 48.0
 
-DELAI_SCANNER = 300.0
+DELAI_SCANNER = 600.0
 
 
 # ---------------------------------------------------------------------------
 # Outils
 # ---------------------------------------------------------------------------
+def _configurer_journal() -> None:
+    """Fait apparaitre nos messages dans les logs du serveur.
+
+    Sans cela, sur Streamlit Cloud, un blocage ne laisse AUCUNE trace
+    exploitable : on voit seulement le bruit des threads de Streamlit.
+    """
+    racine = logging.getLogger()
+    if racine.level > logging.INFO or not racine.handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
+            datefmt="%H:%M:%S",
+            force=False,
+        )
+    racine.setLevel(logging.INFO)
+
+
+def _taire_bruit_streamlit() -> None:
+    """Empeche les avertissements de thread de noyer les logs.
+
+    Quand les 4 scanners tournent en parallele, Streamlit emet des dizaines
+    de « missing ScriptRunContext » par seconde. C'est normal (nos threads
+    ne sont pas le thread principal) mais cela masque nos propres messages.
+    On limite donc le bruit des modules de Streamlit, rien d'autre.
+    """
+    for nom in ("streamlit.runtime.scriptrunner.script_run_context",
+                "streamlit.runtime.scriptrunner_utils.script_run_context",
+                "streamlit.runtime.scriptrunner",
+                "oandapyV20.oandapyV20",
+                "urllib3",
+                "matplotlib"):
+        logging.getLogger(nom).setLevel(logging.WARNING)
+
+
 def _charger_module(nom: str, chemin: Path, cwd: Path | None = None):
     """Importe un fichier .py isole, sans toucher au fichier lui-meme.
 
@@ -519,6 +553,13 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
             e.message = message
         if duree is not None:
             e.duree_s = duree
+        # On trace AUSSI dans les logs serveur : sans cela, un blocage sur
+        # Streamlit Cloud ne laisse aucune trace exploitable.
+        if statut in ("ok", "echec"):
+            logger.info("[%s] %s - %s%s", cle, statut, message or "",
+                        " ({0:.1f}s)".format(duree) if duree else "")
+        elif message:
+            logger.info("[%s] %s", cle, message)
         if progression:
             progression(cle, e)
 
@@ -527,8 +568,11 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
             _maj(cle, "en_cours", msg)
         return _f
 
+    _configurer_journal()
+    _taire_bruit_streamlit()
     preparer_environnement(ident)
     installer_secrets_streamlit(ident)
+    logger.info("chaine demarree - environnement=%s", ident.environnement)
 
     travail = Path(tempfile.mkdtemp(prefix="bluestar_desk_"))
     res.dossier_travail = travail
