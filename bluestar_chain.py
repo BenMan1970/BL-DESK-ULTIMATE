@@ -326,7 +326,33 @@ def _scanner_rsi(ident, travail, journal):
     dossier = DOSSIER_RSI
     mod = _charger_module("bs_rsi", dossier / "app.py", dossier)
     resultat = mod.run_scan()
+
+    # [AUDIT] Un refus du scanner n'est PAS un scan vide. run_scan() peut rendre
+    # None (verrou de scan actif) ou {"cooldown": s, "results": None} (refus
+    # trop rapproche). Sans ce garde-fou, la chaine exportait un document a 0
+    # instrument marque "ok", et l'echec ne reapparaissait qu'au merge sous la
+    # forme trompeuse "3/4 scanners reconnus". On echoue ici, explicitement.
+    if resultat is None:
+        raise RuntimeError(
+            "RSI: scan refuse par le verrou interne du scanner (une autre "
+            "execution est en cours) - relancez dans quelques secondes"
+        )
+    if isinstance(resultat, dict) and "cooldown" in resultat:
+        try:
+            restant = float(resultat.get("cooldown") or 0.0)
+        except (TypeError, ValueError):
+            restant = 0.0
+        raise RuntimeError(
+            "RSI: cooldown actif ({0:.0f} s restantes) - le scanner refuse deux "
+            "executions trop rapprochees. Attendez puis relancez.".format(restant)
+        )
+
     bruts = resultat.get("results") if isinstance(resultat, dict) else resultat
+    if not bruts:
+        raise RuntimeError(
+            "RSI: le scan n'a retourne aucun instrument - verifiez le jeton "
+            "OANDA (autorisation) puis relancez"
+        )
     stats = mod.compute_statistics(bruts)
     import datetime
     scan_ts = datetime.datetime.now(datetime.timezone.utc)
@@ -418,20 +444,66 @@ def _calendrier(travail, journal):
 
     cible = dossier / FICHIER_CALENDAR
     if not cible.is_file():
-        # Rien de neuf publie : soit un plancher, soit un cooldown.
+        # Rien de neuf publie. Le motif reel est dans health.json : 429
+        # (mode=cooldown), plancher anti-429 (mode=floor), panne de source
+        # (HTTP_ERROR / NO_DATA) ou ingestion desactivee (mode=reader). On ne
+        # les confond plus : "limite de debit" n'est vrai que pour un 429.
         etat = ""
+        erreur = ""
+        mode = ""
+        limite = None
         sante = dossier / "health.json"
         if sante.is_file():
             try:
                 h = json.loads(sante.read_bytes())
                 etat = str(h.get("status") or h.get("error") or "")
+                erreur = str(h.get("error") or "")
+                mode = str(h.get("mode") or "").lower()
+                limite = h.get("rate_limit") if h.get("rate_limited") else None
             except Exception:
                 etat = ""
-        if charge is None or "COOLDOWN" in etat.upper() or "FLOOR" in etat.upper():
+        motif = (erreur or etat).upper()
+        if mode == "cooldown" or "RATE_LIMIT" in motif or "COOLDOWN" in motif:
+            precision = ""
+            if isinstance(limite, dict):
+                jusqua = (limite.get("rate_limited_until_utc")
+                          or limite.get("blocked_until_utc")
+                          or limite.get("until"))
+                if jusqua:
+                    try:
+                        import datetime as _dt
+                        t = _dt.datetime.fromisoformat(
+                            str(jusqua).replace("Z", "+00:00"))
+                        if t.tzinfo is None:
+                            t = t.replace(tzinfo=_dt.timezone.utc)
+                        reste = (_dt.datetime.now(_dt.timezone.utc)
+                                 - t).total_seconds()
+                        if reste < 0:
+                            precision = (
+                                " - cooldown jusqu'a {0} UTC (environ {1:.0f} min)"
+                                .format(t.strftime("%H:%M:%S"), -reste / 60.0)
+                            )
+                    except ValueError:
+                        precision = ""
             raise RuntimeError(
-                "calendrier indisponible (limite de debit atteinte"
-                + (" - " + etat if etat else "")
-                + ") - relancez dans quelques minutes"
+                "calendrier indisponible : la source a limite le debit (HTTP 429)"
+                + precision
+                + ". Relancez dans quelques minutes : rien n'est casse."
+            )
+        if mode == "floor" or "FLOOR" in motif:
+            raise RuntimeError(
+                "calendrier indisponible : plancher anti-429 actif (la source "
+                "vient d'etre interrogee). Relancez dans une a deux minutes."
+            )
+        if mode == "reader" or "INGEST_DISABLED" in motif:
+            raise RuntimeError(
+                "calendrier indisponible : ingestion desactivee "
+                "(BLUESTAR_DISABLE_INGEST=1) - aucun fetch n'est tente."
+            )
+        if erreur:
+            raise RuntimeError(
+                "calendrier indisponible : echec de la source (" + erreur + ")"
+                " - verifiez la connectivite du conteneur puis relancez."
             )
         raise RuntimeError("le calendrier n'a produit aucun fichier"
                            + (" (" + etat + ")" if etat else ""))
@@ -473,8 +545,22 @@ def _merge(quatre, travail, journal):
 
     detectes = list(getattr(sortie.meta, "scanners_detected", []) or [])
     if len(detectes) < 4:
+        # [AUDIT] Nommer les scanners manquants. Un adaptateur ne reconnait un
+        # scanner que si son export contient au moins un element : un export
+        # VIDE (aucun signal ce jour, ou jeton OANDA refuse) fait echouer le
+        # merge avec "3/4" sans jamais dire lequel manquait.
+        reconnus = sorted({str(d).rsplit(":", 1)[-1].strip()
+                           for d in detectes if str(d).strip()})
+        manquants = sorted({"gps", "rsi", "sr", "choch"} - set(reconnus))
         raise RuntimeError(
-            "merge incomplet : {0}/4 scanners reconnus".format(len(detectes))
+            "merge incomplet : {0}/4 scanners reconnus (reconnus : {1} ; "
+            "non reconnus : {2}). Un scanner non reconnu a produit un export "
+            "vide : aucun signal/actif ce jour, ou jeton OANDA non autorise "
+            "pour ce scanner.".format(
+                len(detectes),
+                ", ".join(reconnus) if reconnus else "aucun",
+                ", ".join(manquants) if manquants else "?",
+            )
         )
     actifs = getattr(sortie.meta, "assets_count", 0)
     if not actifs:
