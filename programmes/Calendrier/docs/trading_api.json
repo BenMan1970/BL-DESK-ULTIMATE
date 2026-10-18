@@ -1,0 +1,78 @@
+{
+  "version": "1.1.0",
+  "provider": "Fair Economy (Forex Factory)",
+  "description": "BLUESTAR Calendar - description honnete du flux et de l'export trading",
+  "feed": {
+    "thisweek": "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    "thisweek_fallback": "https://d1tcktd03x2wof.cloudfront.net/ff_calendar_thisweek.json",
+    "nextweek": "OPT-IN - desactive par defaut (BLUESTAR_SOURCE_URL_NEXT) : la source renvoie regulierement 404",
+    "cadence": "Le fichier hebdomadaire est republie une fois par semaine (typiquement vendredi/samedi). L'ingesteur NE sonde PAS en continu : espacement minimal BLUESTAR_MIN_FETCH_SPACING_S (900 s par defaut, aligne sur max_source_age_seconds) et cooldown de 300 a 3600 s apres tout echec.",
+    "recommended_production": "BLUESTAR_DISABLE_INGEST=1 dans l'app + ingesteur externe (cron/GitHub Action) lancant `python pipeline_calendar.py --once` toutes les 15 min.",
+    "quota_rule": "INCONNUE - non presentee comme un fait. La regle exacte de quota de la source n'a pas ete etablie."
+  },
+  "impact_levels": {
+    "published_by_source": [
+      "High",
+      "Medium",
+      "Low",
+      "Holiday"
+    ],
+    "retained_by_default_policy": [
+      "HIGH",
+      "MEDIUM"
+    ],
+    "note": "La SelectionPolicy ne retient que HIGH et MEDIUM. Low/Holiday existent dans le flux mais ne sont pas publies dans les artefacts par defaut."
+  },
+  "actual_values": {
+    "supported": false,
+    "status_field": "actual_status",
+    "status_values": {
+      "UNSUPPORTED_BY_SOURCE": "Le flux JSON public de Forex Factory / Fair Economy ne publie AUCUN champ 'actual'. L'export ne contiendra donc jamais de valeur realisée."
+    },
+    "note": "Les valeurs 'actual' n'existent pas dans ce flux. Les obtenir demanderait une autre source ou un scraping de la page FF - NON implemente, NON branche, et a valider explicitement avec le proprietaire avant tout developpement."
+  },
+  "data_points": {
+    "title": "Event name",
+    "country": "Currency code (USD, EUR, GBP, JPY, etc.)",
+    "date": "ISO 8601 with timezone offset",
+    "impact": "High/Medium/Low/Holiday",
+    "forecast": "Expected value (peut etre absent ou null)",
+    "previous": "Previous release (peut etre absent ou null)"
+  },
+  "trading_export": {
+    "generator": "trading_export.py",
+    "schema_version": "trading-export-1.0.0",
+    "refusal_policy": "L'export echoue (code retour non nul) si l'artefact est INVALID (rc=2), sans horodatage (rc=2), absent (rc=1) ou plus vieux que BLUESTAR_TRADING_MAX_AGE_S (defaut 3600 s, rc=3) sauf --allow-stale.",
+    "fields": {
+      "schema_version": "Version du CONTRAT de ce document. A refuser si inconnue.",
+      "exported_at_utc": "Instant UTC de PRODUCTION du document (distinct du fetch).",
+      "generated_at_utc": "Instant du cycle d'ingestion ; commun aux artefacts freres.",
+      "fetched_at_utc": "Instant ou NOUS avons recupere la charge utile (pas le Last-Modified de l'editeur).",
+      "artifact_age_s": "Age reel de l'artefact source, en secondes.",
+      "quality_status": "VALID / DEGRADED / INVALID.",
+      "is_stale": "RECALCULE a l'export, jamais lu tel quel.",
+      "content_hash": "Hash de projection economique — parite inter-apps.",
+      "parity_hash": "Hash de parite sur le perimetre du contrat (HIGH+MEDIUM).",
+      "source": "Fournisseur declare.",
+      "source_url": "URL REELLEMENT servie (resolved_url, sinon url).",
+      "total_events": "Nombre d'evenements dans l'artefact source.",
+      "upcoming_events": "Nombre d'evenements a venir au moment de l'export.",
+      "events": "Liste des evenements a venir, triee chronologiquement."
+    },
+    "event_fields": {
+      "id": "occurrence_id stable de l'evenement.",
+      "currency": "Devise (USD, EUR, GBP, JPY, ...).",
+      "name": "Intitule de l'evenement.",
+      "impact": "HIGH ou MEDIUM (perimetre de la politique).",
+      "datetime_utc": "Instant UTC de publication.",
+      "datetime_display": "Meme instant, rendu dans le fuseau d'affichage de l'artefact.",
+      "hours_until": "Heures restantes (recalcule a l'export).",
+      "forecast": "Prevision (raw). null si la source ne publie rien.",
+      "previous": "Valeur precedente (raw). null si absente.",
+      "actual": "TOUJOURS null : la source ne publie pas de valeur realisee.",
+      "actual_status": "UNSUPPORTED_BY_SOURCE — jamais un tiret ambigu.",
+      "pairs_with_currency_exposure": "CONTEXTE uniquement — PAS un signal directionnel.",
+      "pairs_semantics": "Vaut 'context_only_not_a_signal' : garde-fou explicite."
+    }
+  }
+}

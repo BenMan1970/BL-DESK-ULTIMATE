@@ -1,0 +1,13 @@
+# BLUESTAR Pipeline Calendar — UI Midnight Luxe
+#
+# Install: pip install -r requirements.txt
+# To generate seed for Cloud: python pipeline_calendar.py --seed
+
+streamlit==1.63.0
+pydantic==2.13.4
+requests==2.34.2
+urllib3==2.7.0
+tzdata==2026.4
+# Plotly : fourchette volontairement large (on n'utilise que graph_objects,
+# API stable de la v6 à la v7) pour ne pas figer l'app sur un patch mineur.
+plotly>=6.1,<8
