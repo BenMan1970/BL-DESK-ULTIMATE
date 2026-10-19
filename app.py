@@ -567,8 +567,6 @@ with col_g:
 with col_i:
     if st.session_state.quand:
         st.caption("Derniere execution : " + st.session_state.quand)
-    else:
-        st.caption("Aucune execution depuis l'ouverture de cette page.")
 
 if lancer:
     zone = st.container()
