@@ -452,9 +452,10 @@ st.markdown(
 
   .bl-hdr { display:flex; align-items:center; gap:18px;
             padding:22px 0 18px; border-bottom:1px solid rgba(90,140,255,.22); }
-  /* Logo BLUESTAR, affiche par st.image et non par du HTML : une image
-     ne traverse pas le moteur Markdown du navigateur, elle s'affiche donc
-     toujours. C'est ce qui manquait au SVG dessine en HTML. */
+  /* Cadre du logo BLUESTAR. L'image est posee DEDANS, dans la meme
+     chaine HTML, et non par st.image : Streamlit creerait un bloc
+     separe, le navigateur fermerait le cadre vide, et l'image se
+     retrouverait a cote au lieu d'etre dedans. */
   .bl-logo { width:52px; height:52px; border-radius:10px;
              overflow:hidden; flex-shrink:0;
              border:1px solid rgba(90,140,255,.30);
@@ -493,13 +494,11 @@ st.markdown(
 _col_logo, _col_titre = st.columns([1, 14], gap="small")
 
 with _col_logo:
-    # Le logo est pose DANS le cadre, en une seule chaine HTML.
-    #
-    # Pourquoi pas st.image : Streamlit cree un bloc separe pour une image.
-    # Un <div> ouvert par st.markdown puis referme apres l'appel etait donc
-    # ferme aussitot par le navigateur, vide, et l'image se retrouvait
-    # AU-DESSUS du cadre au lieu d'etre dedans.
-    # En mettant l'image dans la balise <img>, tout arrive d'un bloc.
+    # L'image est portee par le fichier lui-meme (_LOGO_B64), pas par un
+    # fichier separe : les envois d'images vers le depot n'aboutissaient
+    # pas et l'interface affichait un « B » de repli.
+    # Cadre et image partent donc en UNE SEULE chaine HTML : le <div>
+    # contient le <img>, le navigateur ne peut pas les separer.
     st.markdown(
         '<div class="bl-logo"><img alt="BLUESTAR" src="data:image/png;base64,'
         + _LOGO_B64
@@ -577,7 +576,6 @@ if lancer:
         barre = st.progress(0.0)
         texte = st.empty()
         liste = st.empty()
-        chrono = st.empty()
 
         etats = {c: ("en_attente", "") for c, _ in ETAPES}
         debut = time.monotonic()

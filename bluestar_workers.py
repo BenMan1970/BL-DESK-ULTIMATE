@@ -247,7 +247,6 @@ def etape_calendrier(travail, seuil_fraicheur=12.0, seuil_peremption=48.0):
                        DOSSIER_CALENDRIER / "pipeline_calendar.py",
                        DOSSIER_CALENDRIER)
         tampon = []
-        manche = logging.StreamHandler()
 
         class _Capture(logging.Handler):
             def emit(self, record):

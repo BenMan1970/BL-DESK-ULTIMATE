@@ -19,12 +19,10 @@ reecriture. Aucun de leurs fichiers n'est touche.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
 import shutil
-import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -38,15 +36,7 @@ logger = logging.getLogger("bluestar.chain")
 RACINE = Path(__file__).resolve().parent
 PROGRAMMES = RACINE / "programmes"
 
-DOSSIER_GPS = PROGRAMMES / "Scanner  MTF GPS"
-DOSSIER_CHOCH = PROGRAMMES / "Scanner CHoCH"
-DOSSIER_RSI = PROGRAMMES / "Scanner RSI"
-DOSSIER_SR = PROGRAMMES / "Scanner Supports & Résistances"
-DOSSIER_MERGE = PROGRAMMES / "Merge"
-DOSSIER_CALENDRIER = PROGRAMMES / "Calendrier"
-DOSSIER_BLS = PROGRAMMES / "BLS V10 Pro"
 
-FICHIER_CALENDAR = "calendar.json"
 
 # Un calendrier plus vieux que ce seuil est refuse : le desk serait trompeur.
 SEUIL_FRAICHEUR_CALENDRIER_H = 12.0
@@ -117,37 +107,6 @@ def _taire_bruit_streamlit() -> None:
         logging.getLogger(nom).setLevel(logging.WARNING)
 
 
-def _charger_module(nom: str, chemin: Path, cwd: Path | None = None):
-    """Importe un fichier .py isole, sans toucher au fichier lui-meme.
-
-    Certains programmes importent des modules freres (par exemple le scanner
-    S/R importe ``bluestar_core``). On ajoute donc le dossier du programme au
-    chemin d'import le temps du chargement, puis on restaure.
-    """
-    ancien = os.getcwd()
-    dossier = str(chemin.parent)
-    ajoute = dossier not in sys.path
-    if ajoute:
-        sys.path.insert(0, dossier)
-    if cwd is not None:
-        os.chdir(cwd)
-    try:
-        spec = importlib.util.spec_from_file_location(nom, chemin)
-        if spec is None or spec.loader is None:
-            raise ImportError("impossible de charger " + str(chemin))
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[nom] = module
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        os.chdir(ancien)
-        if ajoute:
-            try:
-                sys.path.remove(dossier)
-            except ValueError:
-                pass
-
-
 class _BarreInerte:
     """Barre de progression factice pour les fonctions qui en attendent une.
 
@@ -169,14 +128,6 @@ class _BarreInerte:
         return None
 
 
-def _ecrire_atomique(cible: Path, donnees: bytes) -> None:
-    """Ecrit via un fichier temporaire puis renomme."""
-    cible.parent.mkdir(parents=True, exist_ok=True)
-    tmp = cible.with_suffix(cible.suffix + ".tmp")
-    tmp.write_bytes(donnees)
-    tmp.replace(cible)
-
-
 def _sha256(chemin: Path) -> str:
     import hashlib
     h = hashlib.sha256()
@@ -186,26 +137,6 @@ def _sha256(chemin: Path) -> str:
     return h.hexdigest()
 
 
-def _age_heures(doc: dict):
-    """Age d'un artefact calendrier, en heures."""
-    import datetime
-    md = doc.get("metadata") or {}
-    brut = md.get("generated_at_utc") or md.get("generated_at")
-    if not brut:
-        return None
-    try:
-        t = datetime.datetime.fromisoformat(str(brut).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if t.tzinfo is None:
-        t = t.replace(tzinfo=datetime.timezone.utc)
-    ecart = datetime.datetime.now(datetime.timezone.utc) - t
-    return ecart.total_seconds() / 3600.0
-
-
-# ---------------------------------------------------------------------------
-# Identifiants - lus depuis st.secrets, jamais ecrits dans le repo
-# ---------------------------------------------------------------------------
 @dataclass
 class Identifiants:
     """Ce que l'application a besoin de connaitre pour demarrer."""
@@ -353,44 +284,6 @@ def _lancer(cle, fonction, args, delai, journal):
         journal(str(ligne)[:160])
     return bilan, duree
 
-
-def _scanner_gps(ident, travail, journal):
-    bilan, duree = _lancer(
-        "gps", "scanner_gps",
-        (str(travail), ident.jeton, ident.compte), DELAI_SCANNER, journal,
-    )
-    return Path(bilan["cible"]), bilan["message"], bilan["octets"], duree
-
-
-def _scanner_choch(ident, travail, journal):
-    bilan, duree = _lancer(
-        "choch", "scanner_choch",
-        (str(travail), ident.jeton, ident.environnement), DELAI_SCANNER, journal,
-    )
-    return Path(bilan["cible"]), bilan["message"], bilan["octets"], duree
-
-
-def _scanner_rsi(ident, travail, journal):
-    bilan, duree = _lancer(
-        "rsi", "scanner_rsi",
-        (str(travail), ident.jeton, ident.compte, ident.environnement),
-        DELAI_SCANNER, journal,
-    )
-    return Path(bilan["cible"]), bilan["message"], bilan["octets"], duree
-
-
-def _scanner_sr(ident, travail, journal):
-    bilan, duree = _lancer(
-        "sr", "scanner_sr",
-        (str(travail), ident.jeton, ident.compte, ident.environnement),
-        DELAI_SR, journal,
-    )
-    return Path(bilan["cible"]), bilan["message"], bilan["octets"], duree
-
-
-# ---------------------------------------------------------------------------
-# Etapes B, C, D - calendrier, merge, desk
-# ---------------------------------------------------------------------------
 
 def _calendrier(travail, journal):
     bilan, duree = _lancer(
