@@ -11,7 +11,6 @@ modification. Ce fichier ne fait que les enchainer.
 from __future__ import annotations
 
 import datetime
-import hashlib
 import time
 from pathlib import Path
 
