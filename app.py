@@ -10,10 +10,8 @@ modification. Ce fichier ne fait que les enchainer.
 
 from __future__ import annotations
 
-import base64
 import datetime
 import hashlib
-import io
 import time
 from pathlib import Path
 
@@ -436,7 +434,6 @@ _LOGO_B64 = (
     "SUVORK5CYII="
 )
 
-_LOGO_INTEGRE = io.BytesIO(base64.b64decode(_LOGO_B64))
 
 st.set_page_config(
     page_title="BLUESTAR DESK - Decision Intelligence",
@@ -497,27 +494,19 @@ st.markdown(
 _col_logo, _col_titre = st.columns([1, 14], gap="small")
 
 with _col_logo:
-    # Ordre de preference : le .ico (264 Ko, 256x256), puis sa copie PNG,
-    # puis l'original 1254x1254 (1,4 Mo). Les trois montrent le meme
-    # visuel, verifie : ecart de 0,05 % entre le .ico et le PNG 256.
-    # On prend le plus leger d'abord, car le poids est ce qui avait fait
-    # echouer le televersement depuis le navigateur.
-    _dossier = Path(__file__).resolve().parent
-    _logo = None
-    for _nom in ("logo.ico", "logo_256.png", "logo.png"):
-        _candidat = _dossier / _nom
-        if _candidat.is_file():
-            _logo = _candidat
-            break
-
-    st.markdown('<div class="bl-logo">', unsafe_allow_html=True)
-    if _logo is not None:
-        st.image(str(_logo), width=52)
-    else:
-        # Le logo est aussi integre ici, en clair : il s'affiche donc meme
-        # si aucun fichier image n'a pu etre depose dans le depot.
-        st.image(_LOGO_INTEGRE, width=52)
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Le logo est pose DANS le cadre, en une seule chaine HTML.
+    #
+    # Pourquoi pas st.image : Streamlit cree un bloc separe pour une image.
+    # Un <div> ouvert par st.markdown puis referme apres l'appel etait donc
+    # ferme aussitot par le navigateur, vide, et l'image se retrouvait
+    # AU-DESSUS du cadre au lieu d'etre dedans.
+    # En mettant l'image dans la balise <img>, tout arrive d'un bloc.
+    st.markdown(
+        '<div class="bl-logo"><img alt="BLUESTAR" src="data:image/png;base64,'
+        + _LOGO_B64
+        + '"></div>',
+        unsafe_allow_html=True,
+    )
 
 with _col_titre:
     st.markdown(
