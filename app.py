@@ -570,7 +570,10 @@ with col_i:
 if lancer:
     zone = st.container()
     with zone:
-        st.markdown("### Execution en cours")
+        # Le titre est un emplacement modifiable et non un titre fige :
+        # sinon « Execution en cours » reste affiche apres la fin du scan.
+        titre = st.empty()
+        titre.markdown("### Execution en cours")
         barre = st.progress(0.0)
         texte = st.empty()
         liste = st.empty()
@@ -611,6 +614,7 @@ if lancer:
 
         duree = time.monotonic() - debut
         if resultat.statut == "ok":
+            titre.markdown("### Execution terminee")
             barre.progress(1.0)
             texte.markdown(
                 '<div class="bl-msg">Desk genere en <b>' + "{0:.1f}".format(duree)
@@ -619,6 +623,8 @@ if lancer:
                 unsafe_allow_html=True,
             )
         else:
+            titre.markdown("### Execution interrompue")
+            barre.empty()
             texte.markdown(
                 '<div class="bl-msg" style="color:#FF8A8A">Arret de la chaine : <b>'
                 + resultat.erreur + "</b></div>",
