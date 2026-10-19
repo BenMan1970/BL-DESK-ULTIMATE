@@ -78,8 +78,19 @@ st.markdown(
 _col_logo, _col_titre = st.columns([1, 14], gap="small")
 
 with _col_logo:
-    _logo = Path(__file__).resolve().parent / "logo.png"
-    if _logo.is_file():
+    # Ordre de preference : le .ico (264 Ko, 256x256), puis sa copie PNG,
+    # puis l'original 1254x1254 (1,4 Mo). Les trois montrent le meme
+    # visuel, verifie : ecart de 0,05 % entre le .ico et le PNG 256.
+    # On prend le plus leger d'abord, car le poids est ce qui avait fait
+    # echouer le televersement depuis le navigateur.
+    _dossier = Path(__file__).resolve().parent
+    _logo = None
+    for _nom in ("logo.ico", "logo_256.png", "logo.png"):
+        _candidat = _dossier / _nom
+        if _candidat.is_file():
+            _logo = _candidat
+            break
+    if _logo is not None:
         st.markdown('<div class="bl-logo">', unsafe_allow_html=True)
         st.image(str(_logo), width=52)
         st.markdown("</div>", unsafe_allow_html=True)
