@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -55,6 +56,11 @@ SEUIL_FRAICHEUR_CALENDRIER_H = 12.0
 SEUIL_PEREMPTION_CALENDRIER_H = 48.0
 
 DELAI_SCANNER = 600.0
+_MSG_DELAI_SCANNER = (
+    "delai depasse ({delai:.0f} s) - le scanner n'a pas rendu la main. "
+    "La source a probablement limite le debit (HTTP 429) ; relancez dans "
+    "quelques minutes."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,16 +71,31 @@ def _configurer_journal() -> None:
 
     Sans cela, sur Streamlit Cloud, un blocage ne laisse AUCUNE trace
     exploitable : on voit seulement le bruit des threads de Streamlit.
+
+    On installe un handler DEDIE sur notre propre logger, sans passer par
+    le logger racine. C'est indispensable : deux programmes d'origine
+    manipulent le logger racine pendant leur execution (le GPS le met au
+    niveau WARNING, le S/R rappelle basicConfig). Sans handler dedie, nos
+    messages INFO disparaissent des le demarrage des scanners, et un
+    blocage redevient invisible.
     """
+    fmt = logging.Formatter(
+        "%(asctime)s | %(levelname)-7s | %(name)s | %(message)s", "%H:%M:%S"
+    )
+    notre = logging.getLogger("bluestar.chain")
+    notre.setLevel(logging.INFO)
+    notre.propagate = False
+    if not any(getattr(h, "_bluestar", False) for h in notre.handlers):
+        manche = logging.StreamHandler()
+        manche.setLevel(logging.INFO)
+        manche.setFormatter(fmt)
+        manche._bluestar = True
+        notre.addHandler(manche)
+    # Filet de securite : si le logger racine n'a aucun handler, les
+    # bibliotheques tierces ecriraient dans le vide.
     racine = logging.getLogger()
-    if racine.level > logging.INFO or not racine.handlers:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
-            datefmt="%H:%M:%S",
-            force=False,
-        )
-    racine.setLevel(logging.INFO)
+    if not racine.handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def _taire_bruit_streamlit() -> None:
@@ -672,19 +693,54 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
         quatre = {}
         erreurs = {}
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        # On N'UTILISE PAS « with ThreadPoolExecutor(...) » : sa sortie de bloc
+        # appelle shutdown(wait=True), donc si un scanner reste bloque, Python
+        # attend indefiniment la fin de son thread et l'application tourne sans
+        # fin sans jamais rien afficher. C'est exactement le symptome observe
+        # sur Streamlit Cloud. On garde donc la main sur la sortie du pool.
+        pool = ThreadPoolExecutor(max_workers=4)
+        futurs = {}
+        departs = {}
+        try:
+            for cle, fn in taches.items():
+                departs[cle] = time.monotonic()
             futurs = {pool.submit(fn, ident, travail, _journal(cle)): cle
                       for cle, fn in taches.items()}
             for futur in as_completed(futurs, timeout=DELAI_SCANNER):
                 cle = futurs[futur]
-                debut = time.monotonic()
+                ecoule = time.monotonic() - departs.get(cle, time.monotonic())
                 try:
                     cible, message, _o = futur.result()
                     quatre[cle] = cible
-                    _maj(cle, "ok", message, time.monotonic() - debut)
+                    _maj(cle, "ok", message, ecoule)
                 except Exception as exc:
                     erreurs[cle] = type(exc).__name__ + ": " + str(exc)
-                    _maj(cle, "echec", erreurs[cle], time.monotonic() - debut)
+                    _maj(cle, "echec", erreurs[cle], ecoule)
+        except FuturesTimeoutError:
+            logger.warning("delai global des scanners depasse (%.0f s)", DELAI_SCANNER)
+        finally:
+            # On releve ce qui a abouti pendant le delai, puis on nomme les
+            # retardataires au lieu de laisser la chaine muette.
+            for futur, cle in futurs.items():
+                if cle in quatre or cle in erreurs:
+                    continue
+                ecoule = time.monotonic() - departs.get(cle, time.monotonic())
+                if futur.done():
+                    try:
+                        cible, message, _o = futur.result()
+                        quatre[cle] = cible
+                        _maj(cle, "ok", message, ecoule)
+                        continue
+                    except Exception as exc:
+                        erreurs[cle] = type(exc).__name__ + ": " + str(exc)
+                        _maj(cle, "echec", erreurs[cle], ecoule)
+                        continue
+                erreurs[cle] = _MSG_DELAI_SCANNER.format(delai=DELAI_SCANNER)
+                _maj(cle, "echec", erreurs[cle], ecoule)
+            # wait=False : on ne se bloque JAMAIS sur un thread orphelin.
+            # Python ne sait pas tuer un thread ; le processus Streamlit le
+            # recyclera. L'important est de rendre la main a l'utilisateur.
+            pool.shutdown(wait=False)
 
         if erreurs:
             details = " | ".join(c + ": " + m for c, m in erreurs.items())
