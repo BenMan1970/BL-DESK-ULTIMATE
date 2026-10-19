@@ -27,8 +27,6 @@ import shutil
 import sys
 import tempfile
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -55,7 +53,12 @@ FICHIER_CALENDAR = "calendar.json"
 SEUIL_FRAICHEUR_CALENDRIER_H = 12.0
 SEUIL_PEREMPTION_CALENDRIER_H = 48.0
 
-DELAI_SCANNER = 600.0
+DELAI_SCANNER = 420.0
+DELAI_SR = 420.0
+DELAI_CALENDRIER = 180.0
+DELAI_MERGE = 300.0
+DELAI_BLS = 300.0
+ORDRE_MERGE = ("gps", "rsi", "sr", "choch")
 _MSG_DELAI_SCANNER = (
     "delai depasse ({delai:.0f} s) - le scanner n'a pas rendu la main. "
     "La source a probablement limite le debit (HTTP 429) ; relancez dans "
@@ -307,314 +310,115 @@ def installer_secrets_streamlit(ident: Identifiants) -> None:
 
 # ---------------------------------------------------------------------------
 # Etape A - les 4 scanners
+#
+# CHAQUE SCANNER TOURNE DANS SON PROPRE PROCESSUS.
+#
+# Pourquoi : un scanner bloque sur une requete reseau ne peut pas etre
+# arrete depuis un thread Python (un thread ne se tue pas). Sur Streamlit
+# Cloud, cela se traduisait par une application qui tourne sans fin, sans
+# rien afficher. Dans un processus separe, on peut terminer de force au
+# bout du delai : l'application reprend TOUJOURS la main.
+#
+# Les 7 programmes d'origine ne sont pas modifies : bluestar_workers.py
+# les importe et appelle leurs fonctions exactement comme le faisait leur
+# interface.
 # ---------------------------------------------------------------------------
+
+def _lancer(cle, fonction, args, delai, journal):
+    """Execute un travailleur dans un processus separe et rend son bilan."""
+    import bluestar_process
+
+    journal("demarrage...")
+    t0 = time.monotonic()
+    try:
+        bilan = bluestar_process.lancer_isole(
+            "bluestar_workers", fonction, args, delai,
+            dossier=RACINE,
+            fichier_retour=Path(tempfile.gettempdir())
+            / "bluestar_retour_{0}_{1}.json".format(os.getpid(), cle),
+        )
+    except TimeoutError:
+        raise RuntimeError(_MSG_DELAI_SCANNER.format(delai=delai)) from None
+    except Exception as exc:                            # noqa: BLE001
+        message = str(exc)
+        # Le travailleur prefixe deja ses erreurs par le type ; on evite
+        # d'afficher "RuntimeError: RuntimeError: ...".
+        if not message.startswith(type(exc).__name__):
+            message = "{0}: {1}".format(type(exc).__name__, message)
+        raise RuntimeError(message) from exc
+
+    duree = time.monotonic() - t0
+    if not isinstance(bilan, dict):
+        raise RuntimeError("le processus n'a pas rendu de bilan exploitable")
+    for ligne in bilan.get("journal") or []:
+        journal(str(ligne)[:160])
+    return bilan, duree
+
+
 def _scanner_gps(ident, travail, journal):
-    dossier = DOSSIER_GPS
-    mod = _charger_module("bs_gps", dossier / "app.py", dossier)
-    jeton = mod.SecretToken(ident.jeton)
-    df, _erreurs, meta, _avertissements = mod.analyze_all_core(ident.compte, jeton)
-    octets = mod.export_json(df, meta)
-    if isinstance(octets, str):
-        octets = octets.encode("utf-8")
-    cible = travail / "gps.json"
-    _ecrire_atomique(cible, octets)
-    doc = json.loads(octets)
-    signaux = doc.get("signals") or doc.get("assets") or []
-    journal(str(len(signaux)) + " elements")
-    return cible, "{0} elements - {1} octets".format(len(signaux), len(octets)), len(octets)
+    bilan, duree = _lancer(
+        "gps", "scanner_gps",
+        (str(travail), ident.jeton, ident.compte), DELAI_SCANNER, journal,
+    )
+    return Path(bilan["cible"]), bilan["message"], bilan["octets"], duree
 
 
 def _scanner_choch(ident, travail, journal):
-    dossier = DOSSIER_CHOCH
-    mod = _charger_module("bs_choch", dossier / "app.py", dossier)
-    # OandaCredentials(token, env, source) : 3 arguments, pas de account_id.
-    creds = mod.OandaCredentials(ident.jeton, ident.environnement, "OANDA_ACCESS_TOKEN")
-    resultat = mod.run_scan(creds, 0)
-    texte = mod.serialize_pipeline(
-        resultat.payloads, resultat.scan_time, resultat.errors,
-        resultat.coverage_counts, resultat.precision, ident.environnement,
+    bilan, duree = _lancer(
+        "choch", "scanner_choch",
+        (str(travail), ident.jeton, ident.environnement), DELAI_SCANNER, journal,
     )
-    octets = texte.encode("utf-8") if isinstance(texte, str) else texte
-    cible = travail / "choch.json"
-    _ecrire_atomique(cible, octets)
-    doc = json.loads(octets)
-    signaux = doc.get("signals") or []
-    journal(str(len(signaux)) + " signaux")
-    return cible, "{0} signaux - {1} octets".format(len(signaux), len(octets)), len(octets)
+    return Path(bilan["cible"]), bilan["message"], bilan["octets"], duree
 
 
 def _scanner_rsi(ident, travail, journal):
-    dossier = DOSSIER_RSI
-    mod = _charger_module("bs_rsi", dossier / "app.py", dossier)
-    resultat = mod.run_scan()
-
-    # [AUDIT] Un refus du scanner n'est PAS un scan vide. run_scan() peut rendre
-    # None (verrou de scan actif) ou {"cooldown": s, "results": None} (refus
-    # trop rapproche). Sans ce garde-fou, la chaine exportait un document a 0
-    # instrument marque "ok", et l'echec ne reapparaissait qu'au merge sous la
-    # forme trompeuse "3/4 scanners reconnus". On echoue ici, explicitement.
-    if resultat is None:
-        raise RuntimeError(
-            "RSI: scan refuse par le verrou interne du scanner (une autre "
-            "execution est en cours) - relancez dans quelques secondes"
-        )
-    if isinstance(resultat, dict) and "cooldown" in resultat:
-        try:
-            restant = float(resultat.get("cooldown") or 0.0)
-        except (TypeError, ValueError):
-            restant = 0.0
-        raise RuntimeError(
-            "RSI: cooldown actif ({0:.0f} s restantes) - le scanner refuse deux "
-            "executions trop rapprochees. Attendez puis relancez.".format(restant)
-        )
-
-    bruts = resultat.get("results") if isinstance(resultat, dict) else resultat
-    if not bruts:
-        raise RuntimeError(
-            "RSI: le scan n'a retourne aucun instrument - verifiez le jeton "
-            "OANDA (autorisation) puis relancez"
-        )
-    stats = mod.compute_statistics(bruts)
-    import datetime
-    scan_ts = datetime.datetime.now(datetime.timezone.utc)
-    octets = mod.create_json_export(
-        bruts, stats, scan_ts,
-        scan_id=str((resultat or {}).get("scan_id") or "") if isinstance(resultat, dict) else "",
-        completeness=(resultat or {}).get("completeness") if isinstance(resultat, dict) else None,
+    bilan, duree = _lancer(
+        "rsi", "scanner_rsi",
+        (str(travail), ident.jeton, ident.compte, ident.environnement),
+        DELAI_SCANNER, journal,
     )
-    if isinstance(octets, str):
-        octets = octets.encode("utf-8")
-    cible = travail / "rsi.json"
-    _ecrire_atomique(cible, octets)
-    doc = json.loads(octets)
-    n = len(doc.get("instruments") or [])
-    journal(str(n) + " instruments")
-    return cible, "{0} instruments - {1} octets".format(n, len(octets)), len(octets)
+    return Path(bilan["cible"]), bilan["message"], bilan["octets"], duree
 
 
 def _scanner_sr(ident, travail, journal):
-    dossier = DOSSIER_SR
-    mod = _charger_module("bs_sr", dossier / "app.py", dossier)
-    # ALL_SYMBOLS est re-exporte par app.py depuis bluestar_core.
-    symboles = list(getattr(mod, "ALL_SYMBOLS", []) or [])
-    if not symboles:
-        raise RuntimeError("liste d'instruments S/R introuvable (ALL_SYMBOLS)")
-    # run_institutional_scan est asynchrone : l'interface d'origine l'execute
-    # via _run_async_isolated, qui cree sa propre boucle d'evenements.
-    brut = mod._run_async_isolated(
-        lambda: mod.run_institutional_scan(
-            symboles, ident.jeton, ident.compte, 2, oanda_env=ident.environnement,
-        )
+    bilan, duree = _lancer(
+        "sr", "scanner_sr",
+        (str(travail), ident.jeton, ident.compte, ident.environnement),
+        DELAI_SR, journal,
     )
-    agg = mod._accumulate_scan_results(brut, _BarreInerte())
-    conf = mod._compute_all_confluences(symboles, agg, 0.8)
-    resumes = mod._build_summaries(symboles, agg)
-    octets = mod.create_json_export(resumes, conf, None, 0.0, ("Vierge", "Testee", "Role Reverse"))
-    if isinstance(octets, str):
-        octets = octets.encode("utf-8")
-    cible = travail / "sr.json"
-    _ecrire_atomique(cible, octets)
-    doc = json.loads(octets)
-    n = len(doc.get("assets") or doc.get("instruments") or [])
-    journal(str(n) + " actifs")
-    return cible, "{0} actifs - {1} octets".format(n, len(octets)), len(octets)
+    return Path(bilan["cible"]), bilan["message"], bilan["octets"], duree
 
 
 # ---------------------------------------------------------------------------
-# Etape A bis - le calendrier (script d'origine, lance tel quel)
+# Etapes B, C, D - calendrier, merge, desk
 # ---------------------------------------------------------------------------
+
 def _calendrier(travail, journal):
-    """Ingere le calendrier en appelant directement le module d'origine.
-
-    On n'utilise PAS de sous-processus : sur Streamlit Community Cloud, un
-    ``subprocess`` herite d'un environnement ou l'interpreteur n'est pas
-    forcement executable, et il bloque sans que personne ne le voie.
-
-    On appelle donc ``run_once()`` du programme d'origine, qui est la
-    fonction qui fait reellement le travail (le mode ``--once`` de la ligne
-    de commande ne fait que l'appeler). Le code du calendrier n'est pas
-    modifie : on se contente de l'invoquer autrement.
-    """
-    dossier = travail / "calendrier"
-    dossier.mkdir(parents=True, exist_ok=True)
-
-    mod = _charger_module("bs_calendrier", DOSSIER_CALENDRIER / "pipeline_calendar.py",
-                          DOSSIER_CALENDRIER)
-
-    # Le programme d'origine journalise sur sa propre sortie. On la capte
-    # pour la restituer dans l'interface au lieu de la perdre.
-    import io as _io
-    import logging as _log
-    tampon = _io.StringIO()
-    manche = _log.StreamHandler(tampon)
-    manche.setLevel(_log.INFO)
-    racine = _log.getLogger()
-    niveau_avant = racine.level
-    racine.addHandler(manche)
-    racine.setLevel(_log.INFO)
-    try:
-        charge = mod.run_once(Path(dossier))
-    finally:
-        racine.removeHandler(manche)
-        racine.setLevel(niveau_avant)
-    for ligne in tampon.getvalue().splitlines():
-        if ligne.strip():
-            journal(ligne.strip()[:150])
+    bilan, duree = _lancer(
+        "calendrier", "etape_calendrier",
+        (str(travail), SEUIL_FRAICHEUR_CALENDRIER_H, SEUIL_PEREMPTION_CALENDRIER_H),
+        DELAI_CALENDRIER, journal,
+    )
+    return Path(bilan["cible"]), bilan["message"], bilan.get("age_h"), duree
 
 
-
-    cible = dossier / FICHIER_CALENDAR
-    if not cible.is_file():
-        # Rien de neuf publie. Le motif reel est dans health.json : 429
-        # (mode=cooldown), plancher anti-429 (mode=floor), panne de source
-        # (HTTP_ERROR / NO_DATA) ou ingestion desactivee (mode=reader). On ne
-        # les confond plus : "limite de debit" n'est vrai que pour un 429.
-        etat = ""
-        erreur = ""
-        mode = ""
-        limite = None
-        sante = dossier / "health.json"
-        if sante.is_file():
-            try:
-                h = json.loads(sante.read_bytes())
-                etat = str(h.get("status") or h.get("error") or "")
-                erreur = str(h.get("error") or "")
-                mode = str(h.get("mode") or "").lower()
-                limite = h.get("rate_limit") if h.get("rate_limited") else None
-            except Exception:
-                etat = ""
-        motif = (erreur or etat).upper()
-        if mode == "cooldown" or "RATE_LIMIT" in motif or "COOLDOWN" in motif:
-            precision = ""
-            if isinstance(limite, dict):
-                jusqua = (limite.get("rate_limited_until_utc")
-                          or limite.get("blocked_until_utc")
-                          or limite.get("until"))
-                if jusqua:
-                    try:
-                        import datetime as _dt
-                        t = _dt.datetime.fromisoformat(
-                            str(jusqua).replace("Z", "+00:00"))
-                        if t.tzinfo is None:
-                            t = t.replace(tzinfo=_dt.timezone.utc)
-                        reste = (_dt.datetime.now(_dt.timezone.utc)
-                                 - t).total_seconds()
-                        if reste < 0:
-                            precision = (
-                                " - cooldown jusqu'a {0} UTC (environ {1:.0f} min)"
-                                .format(t.strftime("%H:%M:%S"), -reste / 60.0)
-                            )
-                    except ValueError:
-                        precision = ""
-            raise RuntimeError(
-                "calendrier indisponible : la source a limite le debit (HTTP 429)"
-                + precision
-                + ". Relancez dans quelques minutes : rien n'est casse."
-            )
-        if mode == "floor" or "FLOOR" in motif:
-            raise RuntimeError(
-                "calendrier indisponible : plancher anti-429 actif (la source "
-                "vient d'etre interrogee). Relancez dans une a deux minutes."
-            )
-        if mode == "reader" or "INGEST_DISABLED" in motif:
-            raise RuntimeError(
-                "calendrier indisponible : ingestion desactivee "
-                "(BLUESTAR_DISABLE_INGEST=1) - aucun fetch n'est tente."
-            )
-        if erreur:
-            raise RuntimeError(
-                "calendrier indisponible : echec de la source (" + erreur + ")"
-                " - verifiez la connectivite du conteneur puis relancez."
-            )
-        raise RuntimeError("le calendrier n'a produit aucun fichier"
-                           + (" (" + etat + ")" if etat else ""))
-
-    doc = json.loads(cible.read_bytes())
-    age = _age_heures(doc)
-    n = len(doc.get("events") or [])
-
-    if age is not None and age > SEUIL_PEREMPTION_CALENDRIER_H:
-        raise RuntimeError(
-            "artefact calendrier perime ({0:.1f} h > {1:.0f} h) - desk refuse".format(
-                age, SEUIL_PEREMPTION_CALENDRIER_H)
-        )
-    if age is not None and age > SEUIL_FRAICHEUR_CALENDRIER_H:
-        journal("{0} evenements - servi depuis le cache ({1:.1f} h)".format(n, age))
-        return cible, "{0} evenements - cache {1:.1f} h".format(n, age), age
-
-    journal(str(n) + " evenements")
-    return cible, "{0} evenements".format(n), age
-
-
-# ---------------------------------------------------------------------------
-# Etape B - le merge
-# ---------------------------------------------------------------------------
 def _merge(quatre, travail, journal):
-    dossier = DOSSIER_MERGE
-    mod = _charger_module("bs_merge", dossier / "merge_app.py", dossier)
-    fichiers = []
-    for cle in ("gps", "rsi", "sr", "choch"):
-        p = quatre[cle]
-        fichiers.append(mod.IngestedFile(name=p.name, payload=json.loads(p.read_bytes())))
-    registre = mod.ScannerRegistry(
-        [mod.GPSAdapter(), mod.RSIAdapter(), mod.SRAdapter(), mod.CHoCHAdapter()],
-        fallback=mod.HeuristicAdapter(),
+    ordre = [c for c in ORDRE_MERGE if c in quatre]
+    bilan, duree = _lancer(
+        "merge", "etape_merge", (str(travail), ordre), DELAI_MERGE, journal,
     )
-    pipeline = mod.MergePipeline(registry=registre)
-    resultat = pipeline.run(fichiers)
-    sortie = resultat.value
-
-    detectes = list(getattr(sortie.meta, "scanners_detected", []) or [])
-    if len(detectes) < 4:
-        # [AUDIT] Nommer les scanners manquants. Un adaptateur ne reconnait un
-        # scanner que si son export contient au moins un element : un export
-        # VIDE (aucun signal ce jour, ou jeton OANDA refuse) fait echouer le
-        # merge avec "3/4" sans jamais dire lequel manquait.
-        reconnus = sorted({str(d).rsplit(":", 1)[-1].strip()
-                           for d in detectes if str(d).strip()})
-        manquants = sorted({"gps", "rsi", "sr", "choch"} - set(reconnus))
-        raise RuntimeError(
-            "merge incomplet : {0}/4 scanners reconnus (reconnus : {1} ; "
-            "non reconnus : {2}). Un scanner non reconnu a produit un export "
-            "vide : aucun signal/actif ce jour, ou jeton OANDA non autorise "
-            "pour ce scanner.".format(
-                len(detectes),
-                ", ".join(reconnus) if reconnus else "aucun",
-                ", ".join(manquants) if manquants else "?",
-            )
-        )
-    actifs = getattr(sortie.meta, "assets_count", 0)
-    if not actifs:
-        raise RuntimeError("merge sans actif - desk refuse")
-
-    texte = mod.export_json(sortie)
-    octets = texte.encode("utf-8") if isinstance(texte, str) else texte
-    cible = travail / "merged.json"
-    _ecrire_atomique(cible, octets)
-    signaux = getattr(sortie.meta, "signals_count", 0)
-    journal("{0} actifs - {1} signaux".format(actifs, signaux))
-    return cible, "{0} actifs - {1} signaux - {2}/4 scanners".format(actifs, signaux, len(detectes))
+    return Path(bilan["cible"]), bilan["message"], duree
 
 
-# ---------------------------------------------------------------------------
-# Etape C - BLS V10 Pro
-# ---------------------------------------------------------------------------
 def _bls(merged, calendar, travail, journal):
-    dossier = DOSSIER_BLS
-    mod = _charger_module("bs_bls", dossier / "ENGINE.V10.py", dossier)
-    cible = travail / "desk.html"
-    html = mod.run_pipeline(
-        merged_path=str(merged), calendar_json_path=str(calendar), output_path=str(cible),
+    sortie = Path(travail) / "desk.html"
+    bilan, duree = _lancer(
+        "bls", "etape_bls", (str(merged), str(calendar), str(sortie)),
+        DELAI_BLS, journal,
     )
-    octets = html.encode("utf-8") if isinstance(html, str) else html
-    _ecrire_atomique(cible, octets)
-    journal("desk {0} octets".format(len(octets)))
-    return cible, "desk genere - {0} octets".format(len(octets))
+    return Path(bilan["cible"]), bilan["message"], duree
 
 
-# ---------------------------------------------------------------------------
-# Deroulement complet
-# ---------------------------------------------------------------------------
 @dataclass
 class Etape:
     cle: str
@@ -688,59 +492,75 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
         for cle in ("gps", "choch", "rsi", "sr"):
             _maj(cle, "en_cours", "demarrage...")
 
-        taches = {"gps": _scanner_gps, "choch": _scanner_choch,
-                  "rsi": _scanner_rsi, "sr": _scanner_sr}
         quatre = {}
         erreurs = {}
 
-        # On N'UTILISE PAS « with ThreadPoolExecutor(...) » : sa sortie de bloc
-        # appelle shutdown(wait=True), donc si un scanner reste bloque, Python
-        # attend indefiniment la fin de son thread et l'application tourne sans
-        # fin sans jamais rien afficher. C'est exactement le symptome observe
-        # sur Streamlit Cloud. On garde donc la main sur la sortie du pool.
-        pool = ThreadPoolExecutor(max_workers=4)
-        futurs = {}
-        departs = {}
-        try:
-            for cle, fn in taches.items():
-                departs[cle] = time.monotonic()
-            futurs = {pool.submit(fn, ident, travail, _journal(cle)): cle
-                      for cle, fn in taches.items()}
-            for futur in as_completed(futurs, timeout=DELAI_SCANNER):
-                cle = futurs[futur]
-                ecoule = time.monotonic() - departs.get(cle, time.monotonic())
-                try:
-                    cible, message, _o = futur.result()
-                    quatre[cle] = cible
-                    _maj(cle, "ok", message, ecoule)
-                except Exception as exc:
-                    erreurs[cle] = type(exc).__name__ + ": " + str(exc)
-                    _maj(cle, "echec", erreurs[cle], ecoule)
-        except FuturesTimeoutError:
-            logger.warning("delai global des scanners depasse (%.0f s)", DELAI_SCANNER)
-        finally:
-            # On releve ce qui a abouti pendant le delai, puis on nomme les
-            # retardataires au lieu de laisser la chaine muette.
-            for futur, cle in futurs.items():
-                if cle in quatre or cle in erreurs:
+        # LES 4 SCANNERS TOURNENT EN PARALLELE, CHACUN DANS SON PROCESSUS.
+        #
+        # Pourquoi des processus et non des threads : un thread Python ne
+        # peut pas etre tue. Si un scanner reste bloque sur une requete
+        # reseau (OANDA renvoie parfois 429 ou 504), il tournait sans fin
+        # et l'application ne rendait jamais la main. Un processus, lui,
+        # se termine de force : l'application reprend TOUJOURS la main.
+        import bluestar_process
+
+        contexte = bluestar_process.contexte()
+        processus = {}
+        retours = {}
+
+        for cle, nom in (("gps", "scanner_gps"), ("choch", "scanner_choch"),
+                         ("rsi", "scanner_rsi"), ("sr", "scanner_sr")):
+            retours[cle] = Path(tempfile.gettempdir()) / (
+                "bluestar_{0}_{1}.json".format(os.getpid(), cle))
+            try:
+                retours[cle].unlink()
+            except OSError:
+                pass
+
+        for cle, nom in (("gps", "scanner_gps"), ("choch", "scanner_choch"),
+                         ("rsi", "scanner_rsi"), ("sr", "scanner_sr")):
+            args = {
+                "gps": (str(travail), ident.jeton, ident.compte),
+                "choch": (str(travail), ident.jeton, ident.environnement),
+                "rsi": (str(travail), ident.jeton, ident.compte,
+                        ident.environnement),
+                "sr": (str(travail), ident.jeton, ident.compte,
+                       ident.environnement),
+            }[cle]
+            delai = DELAI_SR if cle == "sr" else DELAI_SCANNER
+            _maj(cle, "en_cours", "demarrage...")
+            processus[cle] = {
+                "proc": bluestar_process.demarrer(
+                    contexte, nom, args, retours[cle], RACINE, delai),
+                "retour": retours[cle],
+                "delai": delai,
+                "debut": time.monotonic(),
+            }
+
+        # On attend les scanners EN PARALLELE : chacun a son propre compte a
+        # rebours, et le premier qui rend la main est traite aussitot.
+        restants = set(processus)
+        while restants:
+            for cle in sorted(restants):
+                p = processus[cle]
+                ecoule = time.monotonic() - p["debut"]
+                reste = max(0.0, p["delai"] - ecoule)
+                p["proc"].join(min(reste, 1.0))
+                if p["proc"].is_alive() and ecoule < p["delai"]:
                     continue
-                ecoule = time.monotonic() - departs.get(cle, time.monotonic())
-                if futur.done():
-                    try:
-                        cible, message, _o = futur.result()
-                        quatre[cle] = cible
-                        _maj(cle, "ok", message, ecoule)
-                        continue
-                    except Exception as exc:
-                        erreurs[cle] = type(exc).__name__ + ": " + str(exc)
-                        _maj(cle, "echec", erreurs[cle], ecoule)
-                        continue
-                erreurs[cle] = _MSG_DELAI_SCANNER.format(delai=DELAI_SCANNER)
-                _maj(cle, "echec", erreurs[cle], ecoule)
-            # wait=False : on ne se bloque JAMAIS sur un thread orphelin.
-            # Python ne sait pas tuer un thread ; le processus Streamlit le
-            # recyclera. L'important est de rendre la main a l'utilisateur.
-            pool.shutdown(wait=False)
+                bilan, erreur = bluestar_process.attendre(
+                    p["proc"], p["retour"], 0 if not p["proc"].is_alive() else 1
+                )
+                restants.discard(cle)
+                if erreur:
+                    erreurs[cle] = erreur
+                    _maj(cle, "echec", erreur, time.monotonic() - p["debut"])
+                else:
+                    quatre[cle] = Path(bilan["cible"])
+                    _maj(cle, "ok", bilan.get("message", ""),
+                         round(time.monotonic() - p["debut"], 1))
+            if restants:
+                time.sleep(0.5)
 
         if erreurs:
             details = " | ".join(c + ": " + m for c, m in erreurs.items())
@@ -749,7 +569,7 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
         _maj("calendrier", "en_cours", "ingestion...")
         debut = time.monotonic()
         try:
-            cal_path, cal_msg, _age = _calendrier(travail, _journal("calendrier"))
+            cal_path, cal_msg, _age, _d = _calendrier(travail, _journal("calendrier"))
             _maj("calendrier", "ok", cal_msg, time.monotonic() - debut)
         except Exception as exc:
             _maj("calendrier", "echec", str(exc), time.monotonic() - debut)
@@ -758,7 +578,7 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
         _maj("merge", "en_cours", "fusion...")
         debut = time.monotonic()
         try:
-            merged, merge_msg = _merge(quatre, travail, _journal("merge"))
+            merged, merge_msg, _d = _merge(quatre, travail, _journal("merge"))
             _maj("merge", "ok", merge_msg, time.monotonic() - debut)
         except Exception as exc:
             _maj("merge", "echec", str(exc), time.monotonic() - debut)
@@ -767,7 +587,7 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
         _maj("bls", "en_cours", "rendu du desk...")
         debut = time.monotonic()
         try:
-            desk, bls_msg = _bls(merged, cal_path, travail, _journal("bls"))
+            desk, bls_msg, _d = _bls(merged, cal_path, travail, _journal("bls"))
             res.desk = desk
             res.desk_sha256 = _sha256(desk)
             res.desk_octets = desk.stat().st_size
