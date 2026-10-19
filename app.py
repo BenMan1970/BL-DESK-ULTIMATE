@@ -252,7 +252,18 @@ if res.statut == "ok" and res.desk and Path(res.desk).is_file():
     )
 
     st.caption("Apercu du desk")
-    st.html(octets.decode("utf-8", errors="replace"))
+
+    # On affiche le desk dans une IFRAME et non par st.html.
+    #
+    # Pourquoi : st.html passe le contenu par DOMPurify en profil « html »
+    # (USE_PROFILES: {html: true}), qui SUPPRIME les balises SVG. Le logo
+    # en etoile bleue du desk disparaissait donc de l'apercu, alors qu'il
+    # est intact dans le fichier telecharge - c'est exactement le cadre
+    # blanc sans etoile observe.
+    #
+    # st.iframe depose le HTML tel quel dans une iframe : le desk s'y
+    # affiche complet, avec son logo et ses styles.
+    st.iframe(octets.decode("utf-8", errors="replace"), height=900)
 else:
     st.error("Chaine interrompue - aucun desk n'a ete produit.")
     st.markdown("**Cause reelle :** " + (res.erreur or "inconnue"))
