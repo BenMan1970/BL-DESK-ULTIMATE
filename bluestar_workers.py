@@ -60,6 +60,36 @@ class _BarreInerte:
         return lambda *a, **k: None
 
 
+def _taire_bruit():
+    """Silence le bruit des bibliotheques DANS le processus fils.
+
+    Les avertissements « missing ScriptRunContext » viennent de Streamlit
+    quand un module d'interface est importe hors du thread principal. Ils
+    sont benins mais ils noient les logs de la chaine. Comme chaque scanner
+    tourne desormais dans son propre processus, il faut aussi les taire ici
+    et pas seulement dans le processus parent, ou cela n'a aucun effet.
+
+    On ne touche QU'AU niveau des modules concernes : aucun message de nos
+    propres journalisations n'est perdu.
+    """
+    import logging
+
+    for nom in ("streamlit",
+                "streamlit.runtime.scriptrunner.script_run_context",
+                "streamlit.runtime.scriptrunner_utils.script_run_context",
+                "streamlit.runtime.scriptrunner",
+                "streamlit.runtime.caching",
+                "streamlit.delta_generator",
+                "oandapyV20.oandapyV20",
+                "urllib3",
+                "matplotlib",
+                "matplotlib.font_manager"):
+        try:
+            logging.getLogger(nom).setLevel(logging.CRITICAL)
+        except Exception:                              # noqa: BLE001
+            pass
+
+
 def _charger(nom, chemin, dossier=None):
     """Importe un programme par son chemin, comme le faisait la chaine."""
     dossier = Path(dossier or chemin.parent)
@@ -94,6 +124,7 @@ def _ecrire(cible, donnees):
 
 def scanner_gps(travail, jeton, compte):
     """Scanner MTF GPS : detecte les configurations multi-timeframes."""
+    _taire_bruit()
     mod = _charger("bs_gps", DOSSIER_GPS / "app.py", DOSSIER_GPS)
     jeton_ok = mod.SecretToken(jeton)
     df, _erreurs, meta, _avertissements = mod.analyze_all_core(compte, jeton_ok)
@@ -107,6 +138,7 @@ def scanner_gps(travail, jeton, compte):
 
 def scanner_choch(travail, jeton, environnement):
     """Scanner CHoCH : detecte les changements de caractere."""
+    _taire_bruit()
     mod = _charger("bs_choch", DOSSIER_CHOCH / "app.py", DOSSIER_CHOCH)
     creds = mod.OandaCredentials(jeton, environnement, "OANDA_ACCESS_TOKEN")
     resultat = mod.run_scan(creds, 0)
@@ -123,6 +155,7 @@ def scanner_choch(travail, jeton, environnement):
 
 def scanner_rsi(travail, jeton, compte, environnement):
     """Scanner RSI : mesure la force relative sur 165 cellules."""
+    _taire_bruit()
     mod = _charger("bs_rsi", DOSSIER_RSI / "app.py", DOSSIER_RSI)
     resultat = mod.run_scan()
     if resultat is None:
@@ -173,6 +206,7 @@ def scanner_rsi(travail, jeton, compte, environnement):
 
 def scanner_sr(travail, jeton, compte, environnement):
     """Scanner Supports & Resistances : cartographie les zones de prix."""
+    _taire_bruit()
     mod = _charger("bs_sr", DOSSIER_SR / "app.py", DOSSIER_SR)
     symboles = list(getattr(mod, "ALL_SYMBOLS", []) or [])
     if not symboles:
@@ -197,6 +231,7 @@ def scanner_sr(travail, jeton, compte, environnement):
 
 def etape_calendrier(travail, seuil_fraicheur=12.0, seuil_peremption=48.0):
     """Calendrier economique. Aucun secret OANDA : sources publiques."""
+    _taire_bruit()
     import datetime
     import logging
 
@@ -292,6 +327,7 @@ def etape_merge(travail, ordre):
     pipeline par get_pipeline(), on enveloppe chaque fichier dans un
     IngestedFile, puis on appelle pipeline.run(). On ne devine rien.
     """
+    _taire_bruit()
     mod = _charger("bs_merge", DOSSIER_MERGE / "merge_app.py", DOSSIER_MERGE)
 
     ingeres = []
@@ -363,6 +399,7 @@ def etape_merge(travail, ordre):
 
 def etape_bls(merged, calendar, sortie):
     """BLS V10 Pro : produit le desk HTML final."""
+    _taire_bruit()
     mod = _charger("bs_bls", DOSSIER_BLS / "app.py", DOSSIER_BLS)
     resultat = mod.run_pipeline(
         merged_path=str(merged), calendar_json_path=str(calendar),
