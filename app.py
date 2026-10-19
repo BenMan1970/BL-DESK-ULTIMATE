@@ -37,14 +37,14 @@ st.markdown(
 
   .bl-hdr { display:flex; align-items:center; gap:18px;
             padding:22px 0 18px; border-bottom:1px solid rgba(90,140,255,.22); }
-  /* Reproduit le .logo-marker du desk d'origine : cadre blanc 42 px,
-     bord arrondi 5 px, filet gris-bleu clair. */
-  .bl-logo { width:42px; height:42px; border-radius:5px;
-             background:#FFFFFF;
-             border:1px solid #DDE3F5;
-             display:flex; align-items:center; justify-content:center;
-             flex-shrink:0; }
-  .bl-logo svg { display:block; }
+  /* Logo BLUESTAR, affiche par st.image et non par du HTML : une image
+     ne traverse pas le moteur Markdown du navigateur, elle s'affiche donc
+     toujours. C'est ce qui manquait au SVG dessine en HTML. */
+  .bl-logo { width:52px; height:52px; border-radius:10px;
+             overflow:hidden; flex-shrink:0;
+             border:1px solid rgba(90,140,255,.30);
+             background:rgba(255,255,255,.04); }
+  .bl-logo img { width:100%; height:100%; object-fit:cover; display:block; }
   .bl-nom { font-size:25px; font-weight:700; color:#EAF1FF;
             letter-spacing:2.4px; line-height:1.15; }
   .bl-sous { font-size:12.5px; color:#6C86B8; letter-spacing:1.6px;
@@ -75,18 +75,33 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-st.markdown(
-    """
+_col_logo, _col_titre = st.columns([1, 14], gap="small")
+
+with _col_logo:
+    _logo = Path(__file__).resolve().parent / "logo.png"
+    if _logo.is_file():
+        st.markdown('<div class="bl-logo">', unsafe_allow_html=True)
+        st.image(str(_logo), width=52)
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div class="bl-logo" style="display:flex;align-items:center;'
+            'justify-content:center;font-weight:800;color:#EAF1FF;">B</div>',
+            unsafe_allow_html=True,
+        )
+
+with _col_titre:
+    st.markdown(
+        """
 <div class="bl-hdr">
-  <div class="bl-logo"><svg width="36" height="36" viewBox="0 0 24 24" fill="none"><path d="M12 17.27L18.18 21L16.54 13.97L22 9.24L14.81 8.63L12 2L9.19 8.63L2 9.24L7.46 13.97L5.82 21L12 17.27Z" fill="#1B45B4"/></svg></div>
   <div>
     <div class="bl-nom">BLUESTAR</div>
     <div class="bl-sous">Decision Intelligence</div>
   </div>
 </div>
 """,
-    unsafe_allow_html=True,
-)
+        unsafe_allow_html=True,
+    )
 
 # ---------------------------------------------------------------------------
 # Verification des identifiants
