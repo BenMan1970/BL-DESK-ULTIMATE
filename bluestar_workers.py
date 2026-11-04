@@ -144,7 +144,8 @@ def scanner_choch(travail, jeton, environnement):
     resultat = mod.run_scan(creds, 0)
     octets = mod.serialize_pipeline(
         resultat.payloads, resultat.scan_time, resultat.errors,
-        resultat.coverage_counts, resultat.precision, environnement,
+        resultat.coverage_counts, resultat.precision,
+        getattr(resultat, "env", None) or environnement,
     )
     n = len(resultat.payloads or [])
     cible = Path(travail) / "choch.json"
@@ -179,8 +180,10 @@ def scanner_rsi(travail, jeton, compte, environnement):
     # bilan du scan pour declarer sa completude. Auparavant la chaine annoncait
     # une completude de 1.0 en dur : le document etait alors marque OK alors que
     # le scan pouvait etre partiel, et le merge refusait l'export.
-    scan_ts = datetime.datetime.now(datetime.timezone.utc)
     bilan = resultat if isinstance(resultat, dict) else {}
+    scan_ts = bilan.get("scan_ts") if isinstance(bilan, dict) else None
+    if not isinstance(scan_ts, datetime.datetime):
+        scan_ts = datetime.datetime.now(datetime.timezone.utc)
     scan_id = str(bilan.get("scan_id", "") or "")
     attendues = int(bilan.get("expected_cells")
                     or len(getattr(mod, "ASSETS", []) or [])
@@ -220,7 +223,13 @@ def scanner_sr(travail, jeton, compte, environnement):
     conf = mod._compute_all_confluences(symboles, agg, 0.8)
     resumes = mod._build_summaries(symboles, agg)
     octets = mod.create_json_export(
-        resumes, conf, None, 0.0, ("Vierge", "Testee", "Role Reverse")
+        resumes, conf, None, 0.0, ("Vierge", "Testee", "Role Reverse"),
+        scan_errors=agg.get("scan_errors"),
+        missing_tfs_map=agg.get("missing_tfs_map"),
+        anomalies=agg.get("anomalies_map"),
+        bars_map=agg.get("bars_map"),
+        spans_map=agg.get("spans_map"),
+        calibration_profile_version=getattr(mod, "CALIBRATION_PROFILE_VERSION", None),
     )
     n = len(resumes or [])
     cible = Path(travail) / "sr.json"
@@ -399,7 +408,7 @@ def etape_merge(travail, ordre):
 def etape_bls(merged, calendar, sortie):
     """BLS V10 Pro : produit le desk HTML final."""
     _taire_bruit()
-    mod = _charger("bs_bls", DOSSIER_BLS / "app.py", DOSSIER_BLS)
+    mod = _charger("bs_bls", DOSSIER_BLS / "ENGINE.V10.py", DOSSIER_BLS)
     resultat = mod.run_pipeline(
         merged_path=str(merged), calendar_json_path=str(calendar),
         output_path=str(sortie),
