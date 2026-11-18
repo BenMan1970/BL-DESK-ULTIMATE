@@ -119,16 +119,12 @@ def test_summer_and_winter_offsets_differ_for_dst_zones():
     assert "UTC+2" in A.tz_display_label("Europe/Paris", jul)
 
 
-# ── 4. Le fuseau système du SERVEUR ne décide toujours pas ──────────────
-def test_server_timezone_never_decides_the_view():
-    """Le bug d'origine : le conteneur Cloud affichait UTC. Il ne doit PAS
-    revenir sous pretexte de « suivre l'utilisateur »."""
-    import os, inspect
-    src = inspect.getsource(A.resolve_view_tz)
-    assert "system" not in src.lower().replace("système", "system") or \
-        "JAMAIS" in src, "resolve_view_tz ne doit pas consulter le systeme"
-    # et le defaut reste Casablanca quand rien n'est fourni
-    assert A.resolve_view_tz(None)[0] == A.DEFAULT_VIEW_TZ
+# ── 4. [K-01] Le fuseau système décide, comme dans l'artefact ───────────
+def test_server_timezone_decides_the_view_like_the_artifact():
+    """Doctrine retenue : heure système partout. La vue et l'artefact
+    legacy doivent produire la même clé et la même origine."""
+    import calendar_compat as _cc
+    assert A.resolve_view_tz(None) == _cc.resolve_display_tz()
 
 
 def test_travel_suggestion_uses_the_browser_not_the_server():

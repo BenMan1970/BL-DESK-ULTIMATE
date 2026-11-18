@@ -624,17 +624,27 @@ def resolve_view_tz(explicit: Optional[str] = None) -> Tuple[str, str]:
     """(clé IANA, origine) du fuseau d'AFFICHAGE de cette page.
 
     Ordre : ``explicit`` (widget sidebar) > ``BLUESTAR_DISPLAY_TZ`` >
-    ``DEFAULT_VIEW_TZ``. Le fuseau SYSTÈME n'est JAMAIS consulté : c'est lui
-    qui faisait afficher « UTC » sur le serveur Cloud et une heure locale sur
-    le poste du propriétaire, pour le même artefact.
+    fuseau SYSTÈME > ``DEFAULT_VIEW_TZ``.
+
+    [K-01 — doctrine « heure système partout »] Le fuseau système est désormais
+    consulté ici comme dans ``calendar_compat.resolve_display_tz`` et
+    ``calendar_core.DEFAULT_DISPLAY_TZ``. Auparavant l'UI affichait
+    Africa/Casablanca alors que l'artefact legacy portait le fuseau du runner
+    (Etc/UTC sur Cloud) : le même instant avait deux libellés dans le rapport.
     """
-    for token, origin in ((explicit, "explicit"),
-                          (os.environ.get("BLUESTAR_DISPLAY_TZ"), "env")):
-        if not token:
-            continue
-        key = _valid_tz_key(token)
+    if explicit:
+        key = _valid_tz_key(explicit)
+        if key:
+            return key, "explicit"
+    # Délégation à la fonction canonique : même ordre de priorité, même
+    # respect de BLUESTAR_TZ_AUTO, même origine exportée que l'artefact.
+    try:
+        import calendar_compat as _cc
+        key, origin = _cc.resolve_display_tz()
         if key:
             return key, origin
+    except Exception:
+        pass
     return DEFAULT_VIEW_TZ, "fallback"
 
 

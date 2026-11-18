@@ -125,12 +125,13 @@ def test_funnel_explains_the_real_production_gap():
     q = _build().quality
     f = q.selection_funnel
     dropped = f["impact"] + f["global"] + f["currency"] + f["window"]
-    assert f["normalized"] == q.raw_event_count or True   # cf. note ci-dessous
+    # [K-07] `raw_event_count` = flux BRUT, `normalized` = lignes survivantes.
+    # L'écart doit être intégralement porté par `rejections` (plus de bruit
+    # possible : l'ancienne assertion `or True` ne vérifiait rien).
+    assert f["normalized"] <= q.raw_event_count
+    assert q.raw_event_count - f["normalized"] == len(q.rejections), (
+        q.raw_event_count, f["normalized"], len(q.rejections))
     assert dropped + f["accepted"] + f["duplicates"] == f["normalized"]
-    # NOTE : `raw_event_count` compte le flux BRUT (111), tandis que
-    # `normalized` compte les lignes ayant survecu a la normalisation.
-    # L'ecart entre les deux est lui-meme porte par `rejections`.
-    assert f["normalized"] + len(q.rejections) >= f["normalized"]
 
 
 def test_funnel_is_serialisable_and_stable():

@@ -158,6 +158,21 @@ def scanner_rsi(travail, jeton, compte, environnement):
     """Scanner RSI : mesure la force relative sur 165 cellules."""
     _taire_bruit()
     mod = _charger("bs_rsi", DOSSIER_RSI / "app.py", DOSSIER_RSI)
+    # La chaîne est la source de vérité des identifiants : le scanner RSI les
+    # lit dans st.secrets, on les injecte donc dans son propre module.
+    class _Secrets(dict):
+        def __getitem__(self, cle):
+            return dict.get(self, cle)
+
+        def get(self, cle, defaut=None):
+            return dict.get(self, cle, defaut)
+
+    mod.st.secrets = _Secrets({
+        "OANDA_ACCESS_TOKEN": jeton,
+        "OANDA_ACCOUNT_ID": compte,
+        "OANDA_ENV": environnement,
+        "OANDA_ENVIRONMENT": environnement,
+    })
     resultat = mod.run_scan()
     if resultat is None:
         raise RuntimeError(
@@ -229,7 +244,10 @@ def scanner_sr(travail, jeton, compte, environnement):
         anomalies=agg.get("anomalies_map"),
         bars_map=agg.get("bars_map"),
         spans_map=agg.get("spans_map"),
-        calibration_profile_version=getattr(mod, "CALIBRATION_PROFILE_VERSION", None),
+        calibration_profile_version=(
+            getattr(getattr(mod, "core", None), "CALIBRATION_PROFILE_VERSION", None)
+            or getattr(mod, "CALIBRATION_PROFILE_VERSION", None)
+        ),
     )
     n = len(resumes or [])
     cible = Path(travail) / "sr.json"
@@ -316,12 +334,14 @@ def etape_calendrier(travail, seuil_fraicheur=12.0, seuil_peremption=48.0):
         except ValueError:
             age = None
 
-    if age is not None and age > seuil_peremption:
+    if age is None:
+        raise RuntimeError("horodatage du calendrier illisible - artefact refuse")
+    if age > seuil_peremption:
         raise RuntimeError(
             "artefact perime ({0:.1f} h) - desk refuse".format(age)
         )
     message = f"{n} evenements"
-    if age is not None and age > seuil_fraicheur:
+    if age > seuil_fraicheur:
         message += " (servi depuis le cache, {0:.1f} h)".format(age)
     return {"cle": "calendrier", "cible": str(cible), "message": message,
             "octets": cible.stat().st_size, "age_h": age,

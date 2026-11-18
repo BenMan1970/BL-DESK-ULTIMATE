@@ -605,6 +605,14 @@ class CanonicalAsset(BaseModel):
     # cet actif).
     market_context: Optional[dict[str, Any]] = None
 
+    @field_validator("base", "quote", mode="before")
+    @classmethod
+    def _upper_ccy(cls, v: Any) -> Any:
+        # [B-I01] CalendarEvent.currency est uppercasé par son validator,
+        # mais base/quote ne l'étaient pas : un "eur" minuscule désactivait
+        # silencieusement blackout, C3 et le plafond calendaire.
+        return v.upper() if isinstance(v, str) else v
+
 
 class MergeMeta(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1935,14 +1943,26 @@ def compute_rr(entry: float, sl: float, tp1: float, tp2: Optional[float],
     risk = abs(entry - sl)
     if risk <= 0 or math.isclose(risk, 0.0, abs_tol=1e-12):
         return 0.0, "Risk ~0, invalid"
-    r1 = abs(tp1 - entry)
+    # [B-A03] Le sens est déduit du SL : long si SL < entry, short sinon.
+    # `abs()` récompensait un TP situé du mauvais côté et contournait RR_MIN.
+    side = 1.0 if entry > sl else -1.0
+    r1 = (tp1 - entry) * side
+    if r1 <= 0:
+        return 0.0, f"TP1 on wrong side ({tp1} vs {entry}), invalid"
     if tp2 is None:
         rr = r1 / risk
         detail = f"RR(TP1 only)={rr:.2f}"
     else:
-        r2 = abs(tp2 - entry)
+        r2_raw = (tp2 - entry) * side
+        if r2_raw <= 0:
+            # Un TP2 invalide n'apporte aucun gain : il est neutralisé.
+            detail_note = " [TP2 wrong side ignored]"
+            r2 = 0.0
+        else:
+            detail_note = ""
+            r2 = r2_raw
         rr = (0.6 * r1 + 0.4 * r2) / risk
-        detail = f"RR=(0.6×{r1:.5f}+0.4×{r2:.5f})/{risk:.5f}={rr:.2f}"
+        detail = f"RR=(0.6×{r1:.5f}+0.4×{r2:.5f})/{risk:.5f}={rr:.2f}" + detail_note
     flags = []
     if tp1_syn:
         flags.append("TP1 synth 2×ATR")

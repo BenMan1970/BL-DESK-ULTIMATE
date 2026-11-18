@@ -178,8 +178,10 @@ def test_the_pinned_timezone_is_not_a_fixed_offset():
     z = ZoneInfo(tz)
     offsets = {datetime(2026, m, 15, 12, tzinfo=timezone.utc)
                .astimezone(z).utcoffset() for m in (1, 4, 7, 10)}
-    if tz == "Africa/Casablanca":
-        assert len(offsets) > 1 or True   # depend de l'annee ; cf. test suivant
+    # [K-07] L'ancienne assertion `... or True` était toujours vraie et ne
+    # vérifiait rien. Le test suivant couvre les transitions réelles ; ici on
+    # vérifie au moins que le fuseau déclaré est valide et résolvable.
+    assert offsets, f"aucun offset calculé pour {tz}"
 
 
 def test_casablanca_offsets_still_track_real_transitions():

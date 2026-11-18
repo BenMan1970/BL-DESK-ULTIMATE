@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verifie que les 7 programmes d'origine n'ont pas ete modifies.
+"""Verifie que les 10 fichiers de programme n'ont pas ete modifies.
 
 Ce script compare l'empreinte SHA-256 de chaque fichier de programme a la
 valeur attendue. Si l'une d'elles differe, le fichier a ete modifie.
@@ -31,15 +31,15 @@ ATTENDU = {
     "Scanner Supports & R\u00e9sistances/bluestar_core.py":
         "743948aab02ab0306209b861ac25910e08f7a6f2eb7686faf4f970ee980a4e72",
     "Merge/merge_app.py":
-        "d84e3ce3c4e046d85e7882e56418f6b5e4497a4a0091ba9affd3e587bf133164",
+        "aecab076d2c6d7a9a3c6810db29d2f81da48791da01f0f06192b979ee51dac56",
     "BLS V10 Pro/app.py":
         "7ceeb61a106626e56ebfedbfc42ca328bbf316702c263265ec56e9e27b2b8ff1",
     "BLS V10 Pro/ENGINE.V10.py":
-        "b758097be1fd9cf21c03c50d91e3a440399be85c5e2f812a042c10906b85ca49",
+        "c62830d9f9d06086dc4c3bd0fdded7e6d7977845eefa177a3ccfdf5180791b7a",
     "Calendrier/app.py":
-        "5dbc366dcaa86b6105c0d2aa7fc598ceaecfd3a710c603b8e51cdb24e4ba6525",
+        "6b6c0394379a8d8f22ada67bdfc585afdc3098d80cb86117db93d98835aad8bc",
     "Calendrier/pipeline_calendar.py":
-        "c9d053d6d376e98613b5e77b0274209be6234d67b97be8e53d3668646ee360af",
+        "5bb5d1ef6fc8ee642723cdb33c71f9ca39c78da3e00fed560e1ba885f0bca13f",
 }
 
 
@@ -52,7 +52,7 @@ def sha256(chemin: Path) -> str:
 
 
 def main() -> int:
-    print("Verification de l'integrite des 7 programmes")
+    print("Verification de l'integrite des 10 fichiers de programme")
     print("=" * 62)
     conformes = 0
     manquants = []
@@ -87,7 +87,7 @@ def main() -> int:
         print("  ATTENTION : des fichiers sont absents du depot.")
         return 1
     print()
-    print("  Les 7 programmes sont intacts.")
+    print("  Les 10 fichiers de programme sont intacts.")
     return 0
 
 

@@ -877,6 +877,20 @@ def run_once(data_dir: Path, session: Optional[requests.Session] = None,
     write_health(data_dir, now, payload, None)
     clear_rate_limit(data_dir)
 
+    # [2.10] Le contrat destiné à BLS V10 Pro est publié dans le même cycle.
+    # Non bloquant : un échec d'export ne doit jamais effacer un calendrier
+    # déjà publiable (les artefacts canoniques sont déjà écrits ci-dessus).
+    try:
+        import trading_export
+        code = trading_export.generate_trading_export([
+            "--data-dir", str(data_dir),
+            "--now", payload.generated_at_utc.isoformat().replace("+00:00", "Z"),
+        ])
+        if code != 0:
+            LOG.warning("trading_export non produit (code=%s)", code)
+    except Exception:
+        LOG.exception("trading_export non produit (exception)")
+
     LOG.info("published %d events | status=%s | score=%.2f | hash=%s | parity=%s",
              len(payload.events), payload.quality.status.value,
              payload.quality.data_quality_score,

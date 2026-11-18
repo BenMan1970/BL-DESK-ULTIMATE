@@ -183,6 +183,10 @@ def lire_identifiants() -> Identifiants:
     env = env.lower().strip()
     if env not in ("practice", "live"):
         env = "practice"
+    # [S-A04] Seul CHoCH refusait son jeton de test en live. Le refus est
+    # porté ici, avant tout lancement de scanner, pour les 4 scanners.
+    if env == "live" and jeton and ("TEST" in jeton.upper() or len(jeton) < 32):
+        raise ValueError("jeton de test refuse en environnement live")
     return Identifiants(jeton=jeton, compte=compte, environnement=env)
 
 
@@ -417,7 +421,7 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
                 "rsi": (str(travail), ident.jeton, ident.compte,
                         ident.environnement),
                 "sr": (str(travail), ident.jeton, ident.compte,
-                       ident.environnement),
+                       "trade" if ident.environnement == "live" else "practice"),
             }[cle]
             delai = DELAI_SR if cle == "sr" else DELAI_SCANNER
             _maj(cle, "en_cours", "demarrage...")
@@ -504,7 +508,8 @@ def executer_chaine(ident, progression=None, conserver_travail=False) -> Resulta
                 try:
                     shutil.copy2(res.desk, garde)
                     res.desk = garde
-                except Exception:
-                    pass
+                except Exception as exc:
+                    res.statut = "echec"
+                    res.erreur = "copie du desk impossible: " + str(exc)
             shutil.rmtree(travail, ignore_errors=True)
             res.dossier_travail = None

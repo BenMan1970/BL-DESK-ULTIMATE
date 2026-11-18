@@ -136,12 +136,13 @@ def test_day_of_week_uses_fixed_table_not_strftime():
     assert got["day_of_week"] == expected.title()
 
 
-def test_default_display_tz_is_casablanca_not_system():
-    """Le defaut de la VUE doit etre Africa/Casablanca (ou BLUESTAR_DISPLAY_TZ),
-    jamais le fuseau systeme du serveur."""
-    key, origin = A.resolve_view_tz()
-    assert key == "Africa/Casablanca", (key, origin)
-    assert origin != "system"
+def test_default_display_tz_matches_artifact(monkeypatch):
+    """[K-01] La VUE et l'artefact legacy résolvent le même fuseau."""
+    monkeypatch.delenv("BLUESTAR_DISPLAY_TZ", raising=False)
+    import calendar_compat as _cc
+    expected = _cc.resolve_display_tz()
+    got = A.resolve_view_tz()
+    assert got == expected, (got, expected)
 
 
 def test_view_tz_env_override(monkeypatch):
@@ -152,9 +153,11 @@ def test_view_tz_env_override(monkeypatch):
 
 
 def test_view_tz_invalid_falls_back(monkeypatch):
+    """[K-01] Un réglage invalide est ignoré : on retombe sur le fuseau
+    système, comme dans l'artefact legacy (plus sur Casablanca en dur)."""
     monkeypatch.setenv("BLUESTAR_DISPLAY_TZ", "Not/AZone")
-    key, _ = A.resolve_view_tz()
-    assert key == "Africa/Casablanca"
+    import calendar_compat as _cc
+    assert A.resolve_view_tz() == _cc.resolve_display_tz()
 
 
 def test_feed_grouping_uses_local_date():

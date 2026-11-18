@@ -620,6 +620,10 @@ class RSIReading(BaseModel):
     div_age_bars: int | None = None            # divergence_age_bars
     div_strength_score_raw: float | None = None
     div_confidence_score_raw: float | None = None
+    # [S-02] Zone émise par le scanner RSI (20/30/70/80). Conservée telle
+    # quelle : le Merge continue de calculer son propre `status`, mais ne
+    # détruit plus la classification source dans `rsi_by_tf`.
+    source_zone: str | None = None
 
     @field_validator("value")
     @classmethod
@@ -851,6 +855,8 @@ class CanonicalAsset(BaseModel):
                 "value": r.value,
                 "divergence": r.divergence.value,
                 "status": _rsi_status_from_value(r.value),
+                # [S-02] classification du scanner, préservée telle quelle.
+                "zone": r.source_zone,
                 # None si la source ne fournit pas (rétrocompat totale).
                 "div_strength_score": r.div_strength_score,
                 "div_confidence_score": r.div_confidence_score,
@@ -1408,6 +1414,7 @@ def _extract_nested_rsi(tfs: dict[str, Any]) -> list[RSIReading]:
             divergence=_norm_div(div_label),
             div_strength_score=strength,
             div_confidence_score=confidence,
+            source_zone=(safe_str(v.get("zone"), max_len=32) or None),
             div_kind=kind if kind else None,
             div_confirmed=confirmed,
             div_stale=stale,
